@@ -98,13 +98,23 @@ lval* lval_eval(lenv* e, lval* v);
 lval* lval_join(lval* x, lval* y);
 lval* lval_lambda(lval* formals, lval* body);
 lval* lval_call(lenv* e, lval* f, lval* a);
+int lval_equal(lval* x, lval* y);
 
 lval* builtin_len(lenv* e, lval* a);
+lval* builtin_if(lenv* e, lval* a);
 lval* builtin_def(lenv* e, lval* a);
 lval* builtin_put(lenv* e, lval* a);
 lval* builtin_var(lenv* e, lval* a, char* func);
 lval* builtin_lambda(lenv* e, lval* a);
 lval* builtin_op(lenv* e, lval* a, char* op);
+lval* builtin_cmp(lenv* e, lval* a, char* op);
+lval* builtin_equal(lenv* e, lval* a);
+lval* builtin_noteq(lenv* e, lval* a);
+lval* builtin_order(lenv* e, lval* a, char* od);
+lval* builtin_la(lenv* e, lval* a);
+lval* builtin_sm(lenv* e, lval* a);
+lval* builtin_le(lenv* e, lval* a);
+lval* builtin_se(lenv* e, lval* a);
 lval* builtin_head(lenv* e, lval* a);
 lval* builtin_tail(lenv* e, lval* a);
 lval* builtin_list(lenv* e, lval* a);
@@ -224,6 +234,14 @@ void lenv_add_builtins(lenv* e) {
   lenv_add_builtin(e, "len", builtin_len);
   lenv_add_builtin(e, "=", builtin_put);
   lenv_add_builtin(e, "\\", builtin_lambda);
+  lenv_add_builtin(e, "if", builtin_if);
+
+  lenv_add_builtin(e, "==", builtin_equal);
+  lenv_add_builtin(e, "!=", builtin_noteq);
+  lenv_add_builtin(e, ">", builtin_la);
+  lenv_add_builtin(e, "<", builtin_sm);
+  lenv_add_builtin(e, ">=", builtin_le);
+  lenv_add_builtin(e, "<=", builtin_se);
 
   lenv_add_builtin(e, "+", builtin_add);
   lenv_add_builtin(e, "-", builtin_sub);
@@ -581,6 +599,33 @@ lval* lval_call(lenv* e, lval* f, lval* a) {
   }
 }
 
+int lval_equal(lval* x, lval* y) {
+  if (x->type != y->type) { return 0; }
+
+  switch (x->type) {
+    case LVAL_NUM: return (x->num == y->num);
+    case LVAL_ERR: return (strcmp(x->err, y->err) == 0);
+    case LVAL_SYM: return (strcmp(x->sym, y->sym) == 0);
+
+    case LVAL_FUN:
+      if (x->builtin || y->builtin) {
+        return (x->builtin == y->builtin);
+      } else {
+        return lval_equal(x->formals, y->formals) && lval_equal(x->body, y->body);
+      }
+
+    case LVAL_QEXPR:
+    case LVAL_SEXPR:
+      if (x->count != y->count) { return 0; }
+      for (int i = 0; i < x->count; i++) {
+        if (!lval_equal(x->cell[i], y->cell[i])) { return 0; }
+      }
+      return 1;
+    break;
+  }
+  return 0;
+}
+
 /*** Builtin functions and lookup ***/
 
 lval* builtin_len(lenv* e, lval* a) {
@@ -589,6 +634,26 @@ lval* builtin_len(lenv* e, lval* a) {
   lval* l = malloc(sizeof(lval));
   l->type = LVAL_NUM; l->num = a->cell[0]->count;
   return l;
+}
+
+lval* builtin_if(lenv* e, lval* a) {
+  LASSERT_NUM("if", a, 3);
+  LASSERT_TYPE("if", a, 0, LVAL_NUM);
+  LASSERT_TYPE("if", a, 1, LVAL_QEXPR);
+  LASSERT_TYPE("if", a, 2, LVAL_QEXPR);
+
+  lval* x;
+  a->cell[1]->type = LVAL_SEXPR;
+  a->cell[2]->type = LVAL_SEXPR;
+
+  if (a->cell[0]->num) {
+    x = lval_eval(e, lval_pop(a, 1));
+  } else {
+    x = lval_eval(e, lval_pop(a, 2));
+  }
+
+  lval_del(a);
+  return x;
 }
 
 lval* builtin_def(lenv* e, lval* a) {
@@ -678,6 +743,60 @@ lval* builtin_op(lenv* e, lval* a, char* op) {
   return x;
 }
 
+lval* builtin_cmp(lenv* e, lval* a, char* op) {
+  LASSERT_NUM(op, a, 2);
+
+  lval* x = lval_pop(a, 0);
+  lval* y = lval_pop(a, 0);
+  int r;
+
+  if (strcmp(op, "==") == 0) { r = lval_equal(x, y); }
+  if (strcmp(op, "!=") == 0) { r = !lval_equal(x, y); }
+  lval_del(a);
+  return lval_num(r);
+}
+
+lval* builtin_equal(lenv* e, lval* a) {
+  return builtin_cmp(e, a, "==");
+}
+
+lval* builtin_noteq(lenv* e, lval* a) {
+  return builtin_cmp(e, a, "!=");
+}
+
+lval* builtin_order(lenv* e, lval* a, char* od) {
+  LASSERT_NUM(od, a, 2);
+  for (int i = 0; i < a->count; i++) {
+    LASSERT_TYPE(od, a, i, LVAL_NUM);
+  }
+
+  lval* x = lval_pop(a, 0);
+  lval* y = lval_pop(a, 0);
+  int r;
+
+  if (strcmp(od, ">") == 0) { r = (x->num > y->num); }
+  if (strcmp(od, "<") == 0) { r = (x->num < y->num); }
+  if (strcmp(od, ">=") == 0) { r = x->num >= y->num; }
+  if (strcmp(od, "<=") == 0) { r = x->num <= y->num; }
+  lval_del(a);
+  return lval_num(r);
+}
+
+lval* builtin_la(lenv* e, lval* a) {
+  return builtin_order(e, a, ">");
+}
+
+lval* builtin_sm(lenv* e, lval* a) {
+  return builtin_order(e, a, "<");
+}
+
+lval* builtin_le(lenv* e, lval* a) {
+  return builtin_order(e, a, ">=");
+}
+
+lval* builtin_se(lenv* e, lval* a) {
+  return builtin_order(e, a, "<=");
+}
 lval* builtin_head(lenv* e, lval* a) {
   /* Check Error Conditions */
   LASSERT_NUM("head", a, 1);
